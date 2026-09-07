@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pistachio Search — Offline</title>
+  <link rel="icon" type="image/png" href="assets/pistachio-search-logo-transparent.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+    <header>
+      <div class="eyebrow">LOCAL • OFFLINE • PRIVATE</div>
+      <h1>Pistachio Search</h1>
+      <p class="intro">Drop your Excel term list here, then paste or type Chinese to find approved translations.</p>
+    </header>
+
+    <section id="dropZone" class="drop-zone" aria-label="Excel import area" tabindex="0">
+      <div class="excel-mark">XLSX</div>
+      <div><strong>Drop an Excel workbook here</strong><span>or click to choose an .xlsx file</span></div>
+      <input id="fileInput" type="file" accept=".xlsx,.xlsm,.xlsb" hidden>
+    </section>
+    <p id="importStatus" class="status" role="status">Nothing is uploaded. Your workbook stays on this computer.</p>
+
+    <section id="searchArea" class="search-area" hidden>
+      <label for="searchInput">Search native terms or translations</label>
+      <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="searchInput" type="search" autocomplete="off" placeholder="Example: 权益, 应收融资, or balance sheet"></div>
+      <p class="hint">Results update as you type. Search works in Chinese and English; exact and closest matches appear first.</p>
+      <section id="suggestions" class="suggestions" hidden><strong>Terminology suggestions</strong><p>These are related terms from your Excel—not automatic translations.</p><div id="suggestionList"></div></section>
+    </section>
+
+    <section id="resultsSection" class="results" hidden aria-live="polite">
+      <div class="results-head"><span id="resultCount">0 terms</span><span>Click a Native or Translation cell to copy it · Double-click to temporarily select or edit it</span></div>
+      <div class="table-scroll">
+        <table id="resultsTable">
+          <colgroup><col class="sheet-col"><col class="native-col"><col class="translation-col"></colgroup>
+          <thead><tr><th class="sheet-header">Sheet <span id="sheetResize" class="column-resize" title="Drag to resize the Sheet column" aria-label="Drag to resize the Sheet column"></span></th><th>Native</th><th>Translation</th></tr></thead>
+          <tbody id="resultsBody"></tbody>
+        </table>
+      </div>
+      <div id="emptyState" class="empty" hidden>No matching terms found.</div>
+    </section>
+
+    <aside id="fallback" class="fallback" hidden>
+      <strong>Optional translation fallback</strong>
+      <p>No automatic translation is run in this offline tool. An online translation service or an installed local translation model would be needed for new translations; neither is included, and your Excel terminology is not sent anywhere.</p>
+    </aside>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="cellMenu" class="cell-menu" hidden><button data-action="edit">Edit</button><button data-action="undo">Undo</button><button data-action="save">Save</button></div>
+  <script src="vendor/jszip.min.js"></script>
+  <script src="vendor/opencc-full.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
