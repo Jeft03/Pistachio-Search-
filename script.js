@@ -1,35 +1,50 @@
 /* Runs only in the browser. No fetch, server, or workbook write is used. */
 const $ = (id) => document.getElementById(id);
 const dropZone = $('dropZone'), fileInput = $('fileInput'), searchInput = $('searchInput');
-let terms = [], clickTimer, searchTimer = null, currentFile = null, activeCell = null;
+let terms = [], workbooks = [], exactIndexes = [], searchTimer = null, activeCell = null;
 const openCCReady = Boolean(window.OpenCC && OpenCC.Converter);
 const convertTraditionalToSimplified = openCCReady ? OpenCC.Converter({from:'tw', to:'cn'}) : value => value;
 const convertSimplifiedToTraditional = openCCReady ? OpenCC.Converter({from:'cn', to:'tw'}) : value => value;
 
 dropZone.addEventListener('click', () => fileInput.click());
 dropZone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } });
-fileInput.addEventListener('change', e => e.target.files[0] && importWorkbook(e.target.files[0]));
+fileInput.addEventListener('change', e => { if (e.target.files.length) importWorkbooks([...e.target.files]); e.target.value = ''; });
 ['dragenter','dragover'].forEach(type => dropZone.addEventListener(type, e => { e.preventDefault(); dropZone.classList.add('drag'); }));
 ['dragleave','drop'].forEach(type => dropZone.addEventListener(type, e => { e.preventDefault(); dropZone.classList.remove('drag'); }));
-dropZone.addEventListener('drop', e => { const file = [...e.dataTransfer.files].find(f => /\.(xlsx|xlsm|xlsb)$/i.test(f.name)); if (file) importWorkbook(file); else setStatus('Please choose an Excel .xlsx, .xlsm, or .xlsb file.', 'error'); });
+dropZone.addEventListener('drop', e => { const files = [...e.dataTransfer.files].filter(f => /\.(xlsx|xlsm|xlsb)$/i.test(f.name)); if (files.length) importWorkbooks(files); else setStatus('Please choose Excel .xlsx, .xlsm, or .xlsb files.', 'error'); });
 searchInput.addEventListener('input', scheduleRenderResults);
+$('toggleLibrary').addEventListener('click', () => { const panel = $('libraryPanel'), button = $('toggleLibrary'); panel.hidden = !panel.hidden; button.setAttribute('aria-expanded', String(!panel.hidden)); button.textContent = panel.hidden ? 'Manage files' : 'Close manager'; });
+$('searchScope').addEventListener('change', renderResults);
 setUpSheetColumnResize();
 
-async function importWorkbook(file) { return loadWorkbook(file.name, await file.arrayBuffer()); }
-async function loadWorkbook(name, buffer) {
+async function importWorkbooks(files) {
+  let imported = 0;
+  for (const file of files) {
+    try { if (await addWorkbook(file.name, await file.arrayBuffer())) imported++; }
+    catch (error) { console.error(error); setStatus(`Could not read ${file.name}: ${error.message}`, 'error'); }
+  }
+  if (imported) { searchInput.focus(); renderResults(); }
+}
+async function addWorkbook(name, buffer, {persist = true} = {}) {
   if (!window.JSZip) return setStatus('The local Excel reader is missing. Keep the vendor folder beside this page.', 'error');
   try {
     setStatus(`Reading ${name} locally…`);
     const zip = await JSZip.loadAsync(buffer);
     const parsed = await readXlsx(zip);
-    terms = prepareSearchTerms(parsed.terms);
-    if (!terms.length) throw new Error('No sheet with both a Native column and a Translation/Approved Translation column was found.');
+    const bookTerms = prepareSearchTerms(parsed.terms.map(term => ({...term, workbookId:name, workbookName:name})));
+    if (!bookTerms.length) throw new Error('No sheet with both a Native column and a Translation/Approved Translation column was found.');
+    const previous = workbooks.find(item => item.id === name);
+    const book = {id:name, name, buffer, terms:bookTerms, usedSheets:parsed.usedSheets, priority:previous ? previous.priority : workbooks.length, saved:Date.now()};
+    const existing = workbooks.findIndex(item => item.id === book.id);
+    if (existing >= 0) workbooks.splice(existing, 1, book); else workbooks.push(book);
+    rebuildSearchData();
     $('searchArea').hidden = $('resultsSection').hidden = false;
     $('fallback').hidden = true;
-    currentFile = {name, buffer}; await saveRecent();
-    setStatus(`${name}: ${terms.length.toLocaleString()} terms read from ${parsed.usedSheets} sheet${parsed.usedSheets === 1 ? '' : 's'}. Every workbook sheet was read.${openCCReady ? ' Traditional/Simplified matching is ready.' : ' Warning: Traditional/Simplified converter did not load; keep the vendor folder with this page.'}`, openCCReady ? 'good' : 'error');
-    searchInput.value = ''; searchInput.focus(); renderResults();
-  } catch (error) { console.error(error); setStatus(`Could not read this workbook: ${error.message}`, 'error'); }
+    if (persist) await saveBook(book);
+    renderWorkbookLibrary();
+    setStatus(`${name}: ${bookTerms.length.toLocaleString()} terms read from ${parsed.usedSheets} sheet${parsed.usedSheets === 1 ? '' : 's'}. ${workbooks.length.toLocaleString()} workbook${workbooks.length === 1 ? '' : 's'} are ready to search.${openCCReady ? ' Traditional/Simplified matching is ready.' : ' Warning: Traditional/Simplified converter did not load; keep the vendor folder with this page.'}`, openCCReady ? 'good' : 'error');
+    return true;
+  } catch (error) { console.error(error); setStatus(`Could not read ${name}: ${error.message}`, 'error'); return false; }
 }
 
 async function readXlsx(zip) {
@@ -72,6 +87,24 @@ function scheduleRenderResults() {
   searchTimer = setTimeout(() => { searchTimer = null; renderResults(); }, 120);
 }
 function prepareSearchTerms(items) { return items.map(prepareSearchTerm); }
+function rebuildSearchData() {
+  workbooks.forEach((book, index) => { book.priority = index; });
+  terms = workbooks.flatMap(book => book.terms);
+  terms.forEach((term, index) => { term.order = index; });
+  exactIndexes = workbooks.map(book => {
+    const index = new Map();
+    for (const term of book.terms) {
+      for (const value of [term.native, term.translation, ...(term.aliases || [])]) {
+        const key = canonicalTerm(value);
+        if (!key) continue;
+        const matches = index.get(key) || [];
+        matches.push(term);
+        index.set(key, matches);
+      }
+    }
+    return index;
+  });
+}
 function prepareSearchTerm(term) {
   const aliasText = (term.aliases || []).join(' ');
   term._search = {
@@ -98,7 +131,12 @@ function renderResults() {
   const tokens = makeSearchTokens(query);
   const tokenData = makeSearchTokenData(tokens), queryCanonical = canonicalTerm(query), normalisedQuery = normalise(query);
   const displayed = [], maximumResults = 100;
-  const candidates = query ? terms.filter(term => isCandidate(term, tokenData)) : [];
+  let candidates = [];
+  if (query) {
+    const firstExactIndex = $('searchScope').value === 'first-exact' ? exactIndexes.find(index => index.has(queryCanonical)) : null;
+    // Fast mode never walks later workbooks after an exact hit. All other searches use the full local index.
+    candidates = firstExactIndex ? firstExactIndex.get(queryCanonical) : terms.filter(term => isCandidate(term, tokenData));
+  }
   const matchingCount = candidates.length;
   for (const t of candidates) {
     const search = t._search || prepareSearchTerm(t)._search;
@@ -114,7 +152,10 @@ function renderResults() {
   for (const term of displayed) {
     const exactNative = isExactNativeMatch(term.native, query);
     const tr = document.createElement('tr');
-    tr.append(cell(term.sheet), copyCell(term, 'native', term.nativeMatch.ranges, exactNative), copyCell(term, 'translation', term.translationMatch.ranges));
+    const source = document.createElement('td');
+    if (workbooks.length > 1) source.append(workbookBadge(workbooks.findIndex(book => book.id === term.workbookId) + 1), ' · ');
+    source.append(term.sheet);
+    tr.append(source, copyCell(term, 'native', term.nativeMatch.ranges, exactNative), copyCell(term, 'translation', term.translationMatch.ranges));
     body.append(tr);
   }
 }
@@ -157,13 +198,21 @@ function score(term, queryCanonical, normalisedQuery) {
   return quality + term.bestLength * 10;
 }
 function cell(text) { const td = document.createElement('td'); td.textContent = text; return td; }
+function workbookBadge(number) {
+  const badge = document.createElement('span');
+  badge.className = 'workbook-number';
+  badge.textContent = String(number);
+  badge.setAttribute('aria-label', `Workbook ${number}`);
+  return badge;
+}
 function copyCell(term, field, ranges, exactNative = false) {
   const text = term[field];
   const td = document.createElement('td'), div = document.createElement('div'); div.className = 'copy-cell'; div.dataset.original = text;
-  div.innerHTML = highlightRanges(text, ranges);
+  const label = document.createElement('span');
+  label.innerHTML = highlightRanges(text, ranges);
+  div.append(label);
   if (exactNative) { const tick = document.createElement('img'); tick.className = 'exact-tick'; tick.src = 'assets/exact-match-tick.png'; tick.alt = 'Exact match'; tick.title = 'Exact match'; div.append(' ', tick); }
-  div.addEventListener('click', () => { clearTimeout(clickTimer); clickTimer = setTimeout(() => copyText(text), 190); });
-  div.addEventListener('dblclick', e => { e.preventDefault(); clearTimeout(clickTimer); temporaryEdit(div, text); });
+  setUpDragCopy(div, label, text);
   div.addEventListener('contextmenu', event => { event.preventDefault(); activeCell = {term, field, div}; showCellMenu(event.clientX, event.clientY); });
   td.append(div); return td;
 }
@@ -193,8 +242,68 @@ function mergeRanges(ranges) {
 function highlightRanges(text, ranges) {
   let out = '', at = 0; for (const [start, end] of ranges) { out += escapeHtml(text.slice(at, start)) + `<mark class="match">${escapeHtml(text.slice(start, end))}</mark>`; at = end; } return out + escapeHtml(text.slice(at));
 }
-function temporaryEdit(div, original) { div.classList.add('selecting'); div.contentEditable = 'true'; div.textContent = original; div.focus(); const range = document.createRange(); range.selectNodeContents(div); getSelection().removeAllRanges(); getSelection().addRange(range); const reset = () => { div.contentEditable = 'false'; div.classList.remove('selecting'); renderResults(); }; div.addEventListener('blur', reset, {once:true}); div.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); div.blur(); } }, {once:true}); }
-async function copyText(text) { try { await navigator.clipboard.writeText(text); showToast('Copied'); } catch { showToast('Select the text and copy manually'); } }
+function textPoint(label, offset) {
+  const walker = document.createTreeWalker(label, NodeFilter.SHOW_TEXT);
+  let node, last;
+  while ((node = walker.nextNode())) {
+    if (offset <= node.length) return [node, offset];
+    offset -= node.length; last = node;
+  }
+  return last ? [last, last.length] : [label, 0];
+}
+function offsetAtPointer(label, event) {
+  const box = label.getBoundingClientRect();
+  const x = Math.max(box.left, Math.min(event.clientX, box.right-1));
+  const y = Math.max(box.top, Math.min(event.clientY, box.bottom-1));
+  const caret = document.caretPositionFromPoint?.(x,y);
+  const range = !caret && document.caretRangeFromPoint?.(x,y);
+  const node = caret?.offsetNode || range?.startContainer;
+  const offset = caret?.offset ?? range?.startOffset;
+  if (!node || !label.contains(node)) return null;
+  const prefix = document.createRange();
+  prefix.selectNodeContents(label); prefix.setEnd(node, offset);
+  return prefix.toString().length;
+}
+function setUpDragCopy(div, label, text) {
+  let suppressClick = false;
+  div.addEventListener('click', () => { if (!suppressClick && !div.isContentEditable) copyText(text); });
+  div.addEventListener('dblclick', e => { if (!div.isContentEditable) e.preventDefault(); });
+  div.addEventListener('dragstart', e => { if (!div.isContentEditable) e.preventDefault(); });
+  div.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || !event.isPrimary || div.isContentEditable || event.pointerType === 'touch') return;
+    suppressClick = false;
+    const offset = offsetAtPointer(label, event);
+    if (offset === null) return;
+    const anchor = offset;
+    const id = event.pointerId, x = event.clientX, y = event.clientY;
+    let dragging = false, selected = '';
+    event.preventDefault(); getSelection()?.removeAllRanges(); div.setPointerCapture(id);
+    const move = current => {
+      if (current.pointerId !== id || !div.isConnected) return;
+      if (!dragging && Math.hypot(current.clientX-x, current.clientY-y) < 4) return;
+      dragging = true; suppressClick = true;
+      const offset = offsetAtPointer(label, current);
+      if (offset === null) return;
+      const a = Math.min(anchor, offset), b = Math.max(anchor, offset);
+      const range = document.createRange();
+      range.setStart(...textPoint(label,a)); range.setEnd(...textPoint(label,b));
+      const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+      selected = text.slice(a,b);
+    };
+    const stop = current => {
+      if (current.pointerId !== id) return;
+      if (current.type === 'pointerup') move(current);
+      div.removeEventListener('pointermove',move);
+      for (const type of ['pointerup','pointercancel','lostpointercapture']) div.removeEventListener(type,stop);
+      if (div.hasPointerCapture(id)) div.releasePointerCapture(id);
+      if (current.type === 'pointerup' && div.isConnected && selected.trim()) copyText(selected,'Selected text copied');
+      if (current.type !== 'pointerup') suppressClick = true;
+    };
+    div.addEventListener('pointermove',move);
+    for (const type of ['pointerup','pointercancel','lostpointercapture']) div.addEventListener(type,stop);
+  });
+}
+async function copyText(text, message = 'Copied') { try { await navigator.clipboard.writeText(text); showToast(message); } catch { showToast('Select the text and copy manually'); } }
 function escapeHtml(s) { return s.replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
 function setStatus(message, kind='') { const status = $('importStatus'); status.textContent = message; status.className = `status ${kind}`; }
 function showToast(message) { const toast = $('toast'); toast.textContent = message; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 1400); }
@@ -206,17 +315,71 @@ function setUpSheetColumnResize() {
   handle.addEventListener('pointerup', stop); handle.addEventListener('pointercancel', stop);
 }
 
-/* Local library, editing and export controls. Nothing is sent to a server. */
+/* Local workbook library. Nothing is sent to a server. */
 const DB_NAME = 'pistachio-search-library';
-function db() { return new Promise((resolve, reject) => { const r = indexedDB.open(DB_NAME, 1); r.onupgradeneeded = () => r.result.createObjectStore('books', {keyPath:'name'}); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); }); }
-async function saveRecent() { if (!currentFile) return; const d = await db(); const tx = d.transaction('books','readwrite'); tx.objectStore('books').put({name:currentFile.name,buffer:currentFile.buffer,terms,saved:Date.now()}); await new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)}); }
-async function recentBooks() { const d = await db(); const tx=d.transaction('books','readonly'); const r=tx.objectStore('books').getAll(); return await new Promise((resolve,reject)=>{r.onsuccess=()=>resolve(r.result.sort((a,b)=>b.saved-a.saved));r.onerror=()=>reject(r.error)}); }
-async function renderRecentFiles() { const holder=$('recentFiles'); holder.textContent=''; for (const book of await recentBooks()) { const b=document.createElement('button'); b.type='button'; b.textContent=book.name; b.onclick=async()=>{await loadWorkbook(book.name,book.buffer);if(book.terms){terms=prepareSearchTerms(book.terms);renderResults();}}; holder.append(b); } }
+function db() { return new Promise((resolve, reject) => { const r = indexedDB.open(DB_NAME, 2); r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains('books')) r.result.createObjectStore('books', {keyPath:'id'}); }; r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); }); }
+async function saveBook(book) {
+  const d = await db(), tx = d.transaction('books', 'readwrite');
+  tx.objectStore('books').put({...book, saved:Date.now()});
+  await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+}
+async function deleteBook(id) {
+  const d = await db(), tx = d.transaction('books', 'readwrite');
+  tx.objectStore('books').delete(id);
+  await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+}
+async function savedBooks() {
+  const d = await db(), tx = d.transaction('books', 'readonly'), request = tx.objectStore('books').getAll();
+  return new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+}
+async function restoreLibrary() {
+  try {
+    const books = await savedBooks();
+    workbooks = books.map(book => ({...book, id:book.id || book.name, terms:prepareSearchTerms((book.terms || []).map(term => ({...term, workbookId:book.id || book.name, workbookName:book.name}))) })).sort((a, b) => (a.priority ?? Number.MAX_SAFE_INTEGER) - (b.priority ?? Number.MAX_SAFE_INTEGER) || (a.saved || 0) - (b.saved || 0));
+    if (!workbooks.length) return;
+    rebuildSearchData();
+    $('searchArea').hidden = $('resultsSection').hidden = false;
+    renderWorkbookLibrary();
+    setStatus(`${workbooks.length.toLocaleString()} saved workbook${workbooks.length === 1 ? '' : 's'} restored locally.`, 'good');
+  } catch (error) { console.warn('Could not restore local workbook library', error); }
+}
+function renderWorkbookLibrary() {
+  const holder = $('workbookList'); holder.textContent = '';
+  $('libraryControls').hidden = !workbooks.length;
+  $('librarySummary').textContent = `${workbooks.length} file${workbooks.length === 1 ? '' : 's'} · ${terms.length.toLocaleString()} terms`;
+  workbooks.forEach((book, index) => {
+    const row = document.createElement('div'); row.className = 'workbook-row';
+    const detail = document.createElement('div'); detail.className = 'workbook-detail';
+    const numberBox = document.createElement('div'); numberBox.className = 'workbook-number-box';
+    numberBox.append(workbookBadge(index + 1));
+    const name = document.createElement('strong'); name.textContent = book.name;
+    const meta = document.createElement('span'); meta.textContent = `${book.terms.length.toLocaleString()} terms · ${book.usedSheets || new Set(book.terms.map(term => term.sheet)).size} sheet${(book.usedSheets || new Set(book.terms.map(term => term.sheet)).size) === 1 ? '' : 's'}`;
+    detail.append(name, meta);
+    const actions = document.createElement('div'); actions.className = 'workbook-actions';
+    actions.append(workbookButton('↑', 'Move up', () => moveWorkbook(index, -1), index === 0), workbookButton('↓', 'Move down', () => moveWorkbook(index, 1), index === workbooks.length - 1), workbookButton('Remove', `Remove ${book.name}`, () => removeWorkbook(book.id), false, 'remove'));
+    row.append(numberBox, detail, actions); holder.append(row);
+  });
+}
+function workbookButton(label, title, action, disabled, className = '') { const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.title = title; button.setAttribute('aria-label', title); button.disabled = disabled; button.className = className; button.addEventListener('click', action); return button; }
+async function moveWorkbook(index, direction) {
+  const target = index + direction; if (target < 0 || target >= workbooks.length) return;
+  [workbooks[index], workbooks[target]] = [workbooks[target], workbooks[index]];
+  rebuildSearchData(); renderWorkbookLibrary(); renderResults();
+  await Promise.all(workbooks.map(saveBook));
+}
+async function removeWorkbook(id) {
+  const book = workbooks.find(item => item.id === id); if (!book) return;
+  workbooks = workbooks.filter(item => item.id !== id); rebuildSearchData();
+  await deleteBook(id); renderWorkbookLibrary();
+  if (!workbooks.length) { $('searchArea').hidden = $('resultsSection').hidden = true; setStatus('All workbooks were removed. Choose one or more Excel files to begin.', ''); return; }
+  setStatus(`${book.name} was removed. ${workbooks.length} workbook${workbooks.length === 1 ? '' : 's'} remain ready to search.`, 'good'); renderResults();
+}
 function showCellMenu(x,y){const m=$('cellMenu');m.hidden=false;m.style.left=`${x}px`;m.style.top=`${y}px`;}
 document.addEventListener('click',event=>{if(!event.target.closest('#cellMenu'))$('cellMenu').hidden=true;});
-$('cellMenu').onclick=async event=>{const action=event.target.dataset.action;if(!action||!activeCell)return;const {term,field,div}=activeCell;if(action==='edit'){div.contentEditable='true';div.classList.add('selecting');div.focus();const done=async()=>{term[field]=div.textContent.trim()||term[field];prepareSearchTerm(term);div.contentEditable='false';div.classList.remove('selecting');await saveRecent();renderResults();};div.onblur=done;}if(action==='undo'){term[field]=term[field==='native'?'originalNative':'originalTranslation'];prepareSearchTerm(term);await saveRecent();renderResults();}if(action==='save'){await saveRecent();showToast('Saved in local library');}$('cellMenu').hidden=true;};
+$('cellMenu').onclick=async event=>{const action=event.target.dataset.action;if(!action||!activeCell)return;const {term,field,div}=activeCell;const saveTermBook=async()=>{const book=workbooks.find(item=>item.id===term.workbookId);if(book)await saveBook(book);};if(action==='edit'){div.contentEditable='true';div.classList.add('selecting');div.focus();const done=async()=>{term[field]=div.textContent.trim()||term[field];prepareSearchTerm(term);rebuildSearchData();div.contentEditable='false';div.classList.remove('selecting');await saveTermBook();renderResults();};div.onblur=done;}if(action==='undo'){term[field]=term[field==='native'?'originalNative':'originalTranslation'];prepareSearchTerm(term);rebuildSearchData();await saveTermBook();renderResults();}if(action==='save'){await saveTermBook();showToast('Saved in local library');}$('cellMenu').hidden=true;};
 searchInput.addEventListener('input',()=>showSuggestions(searchInput.value));
 function showSuggestions(){ $('suggestions').hidden=true; }
-async function exportWorkbook(){if(!currentFile)return;const zip=await JSZip.loadAsync(currentFile.buffer);const parser=new DOMParser(),serializer=new XMLSerializer(),groups={};terms.forEach(t=>(groups[t.sheetPath]??=[]).push(t));for(const [path,items] of Object.entries(groups)){const doc=parser.parseFromString(await zip.file(path).async('text'),'application/xml'),data=doc.querySelector('sheetData');for(const term of items){let row=term.row&&doc.querySelector(`row[r="${term.row}"]`);if(!row){const nums=[...data.querySelectorAll('row')].map(r=>Number(r.getAttribute('r')));term.row=Math.max(...nums,0)+1;row=doc.createElementNS(doc.documentElement.namespaceURI,'row');row.setAttribute('r',term.row);data.append(row);}setInlineCell(doc,row,term.nativeIndex,term.row,term.native);setInlineCell(doc,row,term.translationIndex,term.row,term.translation);}zip.file(path,serializer.serializeToString(doc));}const blob=await zip.generateAsync({type:'blob'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=currentFile.name.replace(/\.xlsx?$/i,'')+'_updated.xlsx';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);showToast('Updated Excel exported');}
+async function exportWorkbook(bookId){const book=workbooks.find(item=>item.id===bookId)||workbooks[0];if(!book)return;const zip=await JSZip.loadAsync(book.buffer);const parser=new DOMParser(),serializer=new XMLSerializer(),groups={};book.terms.forEach(t=>(groups[t.sheetPath]??=[]).push(t));for(const [path,items] of Object.entries(groups)){const doc=parser.parseFromString(await zip.file(path).async('text'),'application/xml'),data=doc.querySelector('sheetData');for(const term of items){let row=term.row&&doc.querySelector(`row[r="${term.row}"]`);if(!row){const nums=[...data.querySelectorAll('row')].map(r=>Number(r.getAttribute('r')));term.row=Math.max(...nums,0)+1;row=doc.createElementNS(doc.documentElement.namespaceURI,'row');row.setAttribute('r',term.row);data.append(row);}setInlineCell(doc,row,term.nativeIndex,term.row,term.native);setInlineCell(doc,row,term.translationIndex,term.row,term.translation);}zip.file(path,serializer.serializeToString(doc));}const blob=await zip.generateAsync({type:'blob'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=book.name.replace(/\.xlsx?$/i,'')+'_updated.xlsx';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);showToast('Updated Excel exported');}
 function setInlineCell(doc,row,index,rowNo,value){const ref=`${columnLetters(index)}${rowNo}`;let cell=[...row.querySelectorAll('c')].find(c=>c.getAttribute('r')===ref);if(!cell){cell=doc.createElementNS(doc.documentElement.namespaceURI,'c');cell.setAttribute('r',ref);row.append(cell);}cell.setAttribute('t','inlineStr');cell.replaceChildren();const is=doc.createElementNS(doc.documentElement.namespaceURI,'is'),t=doc.createElementNS(doc.documentElement.namespaceURI,'t');t.textContent=value;if(/^\s|\s$/.test(value))t.setAttribute('xml:space','preserve');is.append(t);cell.append(is);}
 function columnLetters(index){let out='';for(let n=index+1;n;n=Math.floor((n-1)/26))out=String.fromCharCode(65+(n-1)%26)+out;return out;}
+restoreLibrary();

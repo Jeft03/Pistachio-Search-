@@ -17,10 +17,28 @@
 
     <section id="dropZone" class="drop-zone" aria-label="Excel import area" tabindex="0">
       <div class="excel-mark">XLSX</div>
-      <div><strong>Drop an Excel workbook here</strong><span>or click to choose an .xlsx file</span></div>
-      <input id="fileInput" type="file" accept=".xlsx,.xlsm,.xlsb" hidden>
+      <div><strong>Drop Excel workbooks here</strong><span>or click to choose one or more .xlsx files</span></div>
+      <input id="fileInput" type="file" accept=".xlsx,.xlsm,.xlsb" multiple hidden>
     </section>
     <p id="importStatus" class="status" role="status">Nothing is uploaded. Your workbook stays on this computer.</p>
+
+    <section id="libraryControls" class="library" hidden aria-label="Workbook library">
+      <div class="library-head">
+        <div><strong>Workbook library</strong><span id="librarySummary">0 files</span></div>
+        <button id="toggleLibrary" type="button" aria-expanded="false">Manage files</button>
+      </div>
+      <div id="libraryPanel" class="library-panel" hidden>
+        <p class="library-help">Files at the top have higher priority. Remove only the files you no longer need; the remaining files stay in your library.</p>
+        <div id="workbookList" class="workbook-list"></div>
+        <label class="search-mode" for="searchScope">Search behaviour
+          <select id="searchScope">
+            <option value="all">Smart — search every file (recommended)</option>
+            <option value="first-exact">Fast — stop at the first file with an exact match</option>
+          </select>
+        </label>
+        <p class="mode-help">Fast mode checks the pre-built exact-match index in priority order. If no exact match exists, it searches all kept files for close matches.</p>
+      </div>
+    </section>
 
     <section id="searchArea" class="search-area" hidden>
       <label for="searchInput">Search native terms or translations</label>
@@ -30,7 +48,7 @@
     </section>
 
     <section id="resultsSection" class="results" hidden aria-live="polite">
-      <div class="results-head"><span id="resultCount">0 terms</span><span>Click a Native or Translation cell to copy it · Double-click to temporarily select or edit it</span></div>
+      <div class="results-head"><span id="resultCount">0 terms</span><span>Click to copy a cell · Drag to select text and copy on release</span></div>
       <div class="table-scroll">
         <table id="resultsTable">
           <colgroup><col class="sheet-col"><col class="native-col"><col class="translation-col"></colgroup>
