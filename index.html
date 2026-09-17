@@ -12,7 +12,7 @@
     <header>
       <div class="eyebrow">LOCAL • OFFLINE • PRIVATE</div>
       <h1>Pistachio Search</h1>
-      <p class="intro">Drop your Excel term list here, then paste or type Chinese to find approved translations.</p>
+      <p class="intro">Drop your Excel term list here, then paste or type Chinese to find approved translations. <button id="helpButton" class="help-button" type="button" aria-label="About Pistachio Search and how to use it" aria-haspopup="dialog" aria-controls="helpDialog" title="Functions and shortcuts">?</button></p>
     </header>
 
     <section id="dropZone" class="drop-zone" aria-label="Excel import area" tabindex="0">
@@ -42,13 +42,12 @@
 
     <section id="searchArea" class="search-area" hidden>
       <label for="searchInput">Search native terms or translations</label>
-      <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="searchInput" type="search" autocomplete="off" placeholder="Example: 权益, 应收融资, or balance sheet"></div>
-      <p class="hint">Results update as you type. Search works in Chinese and English; exact and closest matches appear first.</p>
+      <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="searchInput" type="search" autocomplete="off" aria-controls="resultsTable" aria-describedby="keyboardHint" placeholder="Example: 权益, 应收融资, or balance sheet"><button id="selectAllToggle" class="select-all-toggle" type="button" aria-label="全选 — select all search text on a single click" aria-pressed="false" title="Off: normal text selection. Click to enable select-all on a single click."><span class="select-all-light" aria-hidden="true"></span><span lang="zh-Hans">全选</span></button></div>
       <section id="suggestions" class="suggestions" hidden><strong>Terminology suggestions</strong><p>These are related terms from your Excel—not automatic translations.</p><div id="suggestionList"></div></section>
     </section>
 
     <section id="resultsSection" class="results" hidden aria-live="polite">
-      <div class="results-head"><span id="resultCount">0 terms</span><span>Click to copy a cell · Drag to select text and copy on release</span></div>
+      <div class="results-head"><div class="result-summary"><span id="resultCount">0 terms</span><span id="selectedMatchInfo" class="selected-match-info" role="status" aria-atomic="true" title="For the selected row only. Repeated Native matches count once. Chinese/mixed searches count distinct matching characters, including digits; English/numeric searches weight each unique matched word or number by its length." hidden></span></div><span>Click to copy a cell · Drag to select text and copy on release</span></div>
       <div class="table-scroll">
         <table id="resultsTable">
           <colgroup><col class="sheet-col"><col class="native-col"><col class="translation-col"></colgroup>
@@ -64,6 +63,35 @@
       <p>No automatic translation is run in this offline tool. An online translation service or an installed local translation model would be needed for new translations; neither is included, and your Excel terminology is not sent anywhere.</p>
     </aside>
   </main>
+  <dialog id="helpDialog" class="help-dialog" aria-labelledby="helpTitle">
+    <div class="help-heading">
+      <h2 id="helpTitle">What can Pistachio Search do?</h2>
+      <form method="dialog"><button class="help-close" type="submit" aria-label="Close help" autofocus>×</button></form>
+    </div>
+    <p class="help-intro">Find and copy approved translations from your own Excel terminology lists.</p>
+    <dl class="help-features">
+      <dt>Import Excel term lists</dt>
+      <dd>Drop one or more .xlsx workbooks onto the page, or click the import area. Sheets need a Native column and a Translation or Approved Translation column.</dd>
+      <dt>Search as you type</dt>
+      <dd>Paste or type Chinese, English or numbers to search Native terms, translations and Simplified aliases. Traditional and Simplified Chinese are matched together. Separate terms with spaces or commas to find results matching any of them.</dd>
+      <dt>Find the closest matches</dt>
+      <dd>Exact matches come first. Repeated Native matches count once toward ranking, while every occurrence stays highlighted. Digits still count. Select a row to see its matching count or exact-match label beside the total number of results. The table displays up to 100 results.</dd>
+      <dt>Keep your place</dt>
+      <dd>Pasting or starting to type in an empty search box returns the table to the top. Continuing to type, deleting, clearing, undoing and redoing preserve your position where the results allow.</dd>
+      <dt>Select the search text</dt>
+      <dd>Click the 全选 pill inside the search bar to toggle it. Green: a single click in the search field selects all text; a double-click selects a word normally. Red: normal text selection. It starts off. The × button still clears your search.</dd>
+      <dt>Copy with the mouse</dt>
+      <dd>Click a Native or Translation cell to copy it. Drag across part of the text and release to copy just that selection.</dd>
+      <dt>Copy with the keyboard</dt>
+      <dd id="keyboardHint">Press ↓ in the search bar to select the first result, or ↑ to select the last. Use ↑/↓ to move between rows and Enter to copy the selected translation. Press Esc, or ↑ on the first row, to return to the search bar.</dd>
+      <dt>Manage your workbook library</dt>
+      <dd>Use Manage files to reorder workbooks by priority or remove them from the library. Smart mode searches every workbook. Fast mode stops at the first workbook with an exact match, or searches all workbooks if none has one.</dd>
+      <dt>Work with cells and columns</dt>
+      <dd>Right-click a cell for Edit, Undo and Save options. Drag the right edge of the Sheet heading to resize that column.</dd>
+      <dt>Use it offline</dt>
+      <dd>Your terminology stays in this browser; nothing is uploaded. Imported workbooks are remembered locally for your next visit. Clearing browser data can remove that library. Pistachio Search looks up your approved translations—it does not generate automatic translations or overwrite your original Excel files.</dd>
+    </dl>
+  </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <div id="cellMenu" class="cell-menu" hidden><button data-action="edit">Edit</button><button data-action="undo">Undo</button><button data-action="save">Save</button></div>
   <script src="vendor/jszip.min.js"></script>

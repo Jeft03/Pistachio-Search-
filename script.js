@@ -1,18 +1,49 @@
 /* Runs only in the browser. No fetch, server, or workbook write is used. */
 const $ = (id) => document.getElementById(id);
 const dropZone = $('dropZone'), fileInput = $('fileInput'), searchInput = $('searchInput');
+const resultsScroller = document.querySelector('.table-scroll');
 let terms = [], workbooks = [], exactIndexes = [], searchTimer = null, activeCell = null;
+let previousSearchValue = searchInput.value, resultsScrollTop = 0;
+let displayedResults = [], selectedResultIndex = -1;
+let selectAllOnSearchClick = false;
 const openCCReady = Boolean(window.OpenCC && OpenCC.Converter);
 const convertTraditionalToSimplified = openCCReady ? OpenCC.Converter({from:'tw', to:'cn'}) : value => value;
 const convertSimplifiedToTraditional = openCCReady ? OpenCC.Converter({from:'cn', to:'tw'}) : value => value;
 
+$('helpButton').addEventListener('click', () => $('helpDialog').showModal());
+$('selectAllToggle').addEventListener('mousedown', event => {
+  // Let mouse users toggle the option without losing their input caret/selection.
+  if (event.button === 0) event.preventDefault();
+});
+$('selectAllToggle').addEventListener('click', () => {
+  selectAllOnSearchClick = !selectAllOnSearchClick;
+  const toggle = $('selectAllToggle');
+  toggle.setAttribute('aria-pressed', String(selectAllOnSearchClick));
+  toggle.title = selectAllOnSearchClick
+    ? 'On: single-click selects all search text; double-click selects a word. Click to turn off.'
+    : 'Off: normal text selection. Click to enable select-all on a single click.';
+});
+searchInput.addEventListener('click', event => {
+  // The browser handles word selection on the second click (and drag selection).
+  if (selectAllOnSearchClick && event.detail === 1 && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && searchInput.selectionStart === searchInput.selectionEnd) {
+    searchInput.select();
+  }
+});
 dropZone.addEventListener('click', () => fileInput.click());
 dropZone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } });
 fileInput.addEventListener('change', e => { if (e.target.files.length) importWorkbooks([...e.target.files]); e.target.value = ''; });
 ['dragenter','dragover'].forEach(type => dropZone.addEventListener(type, e => { e.preventDefault(); dropZone.classList.add('drag'); }));
 ['dragleave','drop'].forEach(type => dropZone.addEventListener(type, e => { e.preventDefault(); dropZone.classList.remove('drag'); }));
 dropZone.addEventListener('drop', e => { const files = [...e.dataTransfer.files].filter(f => /\.(xlsx|xlsm|xlsb)$/i.test(f.name)); if (files.length) importWorkbooks(files); else setStatus('Please choose Excel .xlsx, .xlsm, or .xlsb files.', 'error'); });
-searchInput.addEventListener('input', scheduleRenderResults);
+searchInput.addEventListener('input', handleSearchInput);
+searchInput.addEventListener('keydown', event => {
+  if (ignoreResultShortcut(event) || !['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+  // Navigate the latest query even when its debounced render has not run yet.
+  if (searchTimer !== null) { clearTimeout(searchTimer); searchTimer = null; renderResults(); }
+  if (!displayedResults.length) return;
+  event.preventDefault();
+  selectResult(event.key === 'ArrowDown' ? 0 : displayedResults.length - 1);
+});
 $('toggleLibrary').addEventListener('click', () => { const panel = $('libraryPanel'), button = $('toggleLibrary'); panel.hidden = !panel.hidden; button.setAttribute('aria-expanded', String(!panel.hidden)); button.textContent = panel.hidden ? 'Manage files' : 'Close manager'; });
 $('searchScope').addEventListener('change', renderResults);
 setUpSheetColumnResize();
@@ -82,6 +113,19 @@ function parseRows(doc, shared) {
 }
 function columnNumber(letters) { let n = 0; for (const c of letters) n = n * 26 + c.charCodeAt(0) - 64; return n - 1; }
 
+function handleSearchInput(event) {
+  clearResultSelection();
+  const inputType = event.inputType || '';
+  const isHistoryOrDeletion = /^(history|delete)/.test(inputType);
+  const isPaste = inputType.startsWith('insertFromPaste');
+  const startsSearch = !previousSearchValue.trim() && Boolean(searchInput.value.trim());
+  if (!isHistoryOrDeletion && (isPaste || startsSearch)) {
+    resultsScrollTop = 0;
+    resultsScroller.scrollTop = 0;
+  }
+  previousSearchValue = searchInput.value;
+  scheduleRenderResults();
+}
 function scheduleRenderResults() {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => { searchTimer = null; renderResults(); }, 120);
@@ -127,7 +171,12 @@ function isCandidate(term, tokenData) {
   return tokenData.some(token => search.canonical.some(text => text.includes(token.canonical)) || (token.chinese && search.raw.some(text => hasChineseSubsequence(text, token.value))));
 }
 function renderResults() {
-  const query = searchInput.value.trim(), body = $('resultsBody'); body.textContent = '';
+  // Keep the offset through DOM replacement, including an empty search followed by undo.
+  if (resultsScroller.scrollHeight > resultsScroller.clientHeight) resultsScrollTop = resultsScroller.scrollTop;
+  const query = searchInput.value.trim(), body = $('resultsBody');
+  const hadResultFocus = body.contains(document.activeElement);
+  clearResultSelection();
+  body.textContent = '';
   const tokens = makeSearchTokens(query);
   const tokenData = makeSearchTokenData(tokens), queryCanonical = canonicalTerm(query), normalisedQuery = normalise(query);
   const displayed = [], maximumResults = 100;
@@ -140,23 +189,82 @@ function renderResults() {
   const matchingCount = candidates.length;
   for (const t of candidates) {
     const search = t._search || prepareSearchTerm(t)._search;
-    const nativeMatch = matchText(t.native, tokenData, search.normalised[0]), translationMatch = matchText(t.translation, tokenData, search.normalised[1]), aliasMatch = matchText((t.aliases || []).join(' '), tokenData, search.normalised[2]);
+    const nativeMatch = matchText(t.native, tokenData, search.normalised[0], true), translationMatch = matchText(t.translation, tokenData, search.normalised[1]), aliasMatch = matchText((t.aliases || []).join(' '), tokenData, search.normalised[2], true);
     const candidate = {...t, nativeMatch, translationMatch, aliasMatch, bestLength: Math.max(nativeMatch.bestLength, translationMatch.bestLength, aliasMatch.bestLength)};
     candidate.rankScore = score(candidate, queryCanonical, normalisedQuery);
     if (displayed.length < maximumResults) displayed.push(candidate);
     else { let weakest = 0; for (let i = 1; i < displayed.length; i++) if (compareResults(displayed[i], displayed[weakest]) > 0) weakest = i; if (compareResults(candidate, displayed[weakest]) < 0) displayed[weakest] = candidate; }
   }
   displayed.sort(compareResults);
+  displayedResults = displayed;
   $('resultCount').textContent = query ? `${matchingCount.toLocaleString()} matching term${matchingCount === 1 ? '' : 's'}` : 'Type or paste Chinese or English to start searching';
   $('emptyState').hidden = !query || matchingCount > 0; $('fallback').hidden = !query || matchingCount > 0;
-  for (const term of displayed) {
+  for (const [index, term] of displayed.entries()) {
     const exactNative = isExactNativeMatch(term.native, query);
     const tr = document.createElement('tr');
+    tr.tabIndex = -1;
+    tr.setAttribute('aria-describedby', 'keyboardHint');
+    tr.addEventListener('keydown', event => handleResultKeydown(event, index));
+    tr.addEventListener('focus', () => selectResult(index, false));
+    tr.addEventListener('click', () => selectResult(index, false));
     const source = document.createElement('td');
     if (workbooks.length > 1) source.append(workbookBadge(workbooks.findIndex(book => book.id === term.workbookId) + 1), ' · ');
     source.append(term.sheet);
     tr.append(source, copyCell(term, 'native', term.nativeMatch.ranges, exactNative), copyCell(term, 'translation', term.translationMatch.ranges));
     body.append(tr);
+  }
+  resultsScroller.scrollTop = resultsScrollTop;
+  if (hadResultFocus) searchInput.focus({preventScroll:true});
+}
+function ignoreResultShortcut(event) {
+  return event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.target?.isContentEditable;
+}
+function clearResultSelection() {
+  $('resultsBody').children[selectedResultIndex]?.classList.remove('selected-result');
+  selectedResultIndex = -1;
+  $('selectedMatchInfo').hidden = true;
+  $('selectedMatchInfo').textContent = '';
+}
+function selectedMatchLabel(term) {
+  const queryCanonical = canonicalTerm(searchInput.value.trim());
+  if (term._search.canonical[0] === queryCanonical) return 'Selected: Exact Native match';
+  if (term._search.canonical[1] === queryCanonical) return 'Selected: Exact Translation match';
+  const count = term.nativeMatch.coverage || term.aliasMatch.coverage;
+  if (!count) return 'Selected: Translation match';
+  const field = term.nativeMatch.coverage ? 'Native' : 'alias';
+  return `Selected ${field}: ${count} distinct match${count === 1 ? '' : 'es'}`;
+}
+function selectResult(index, focus = true) {
+  const row = $('resultsBody').children[index], term = displayedResults[index];
+  if (!row || !term) return;
+  clearResultSelection();
+  selectedResultIndex = index;
+  row.classList.add('selected-result');
+  const info = $('selectedMatchInfo');
+  info.textContent = selectedMatchLabel(term);
+  info.hidden = false;
+  if (!focus) return;
+  row.focus({preventScroll:true});
+  // Scroll only the results pane, accounting for its sticky column headings.
+  const viewport = resultsScroller.getBoundingClientRect(), bounds = row.getBoundingClientRect();
+  const top = viewport.top + $('resultsTable').tHead.getBoundingClientRect().height;
+  if (bounds.top < top) resultsScroller.scrollTop += bounds.top - top;
+  else if (bounds.bottom > viewport.bottom) resultsScroller.scrollTop += bounds.bottom - viewport.bottom;
+  resultsScrollTop = resultsScroller.scrollTop;
+}
+function handleResultKeydown(event, index) {
+  if (ignoreResultShortcut(event)) return;
+  if (!['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(event.key)) return;
+  // A mouse click may change the selected row without moving keyboard focus.
+  if (selectedResultIndex >= 0) index = selectedResultIndex;
+  event.preventDefault();
+  if (event.key === 'Escape' || (event.key === 'ArrowUp' && index === 0)) {
+    clearResultSelection();
+    searchInput.focus({preventScroll:true});
+  } else if (event.key === 'Enter') {
+    if (!event.repeat && displayedResults[index]) copyText(displayedResults[index].translation, 'Translation copied');
+  } else {
+    selectResult(Math.max(0, Math.min(displayedResults.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1))));
   }
 }
 function compareResults(a, b) { return b.rankScore - a.rankScore || b.bestLength - a.bestLength || a.order - b.order; }
@@ -174,16 +282,38 @@ function makeSearchTokens(query) {
   return [...new Set(variants)].sort((a,b) => b.length - a.length);
 }
 function chineseVariants(value) { if (!hasChinese(value)) return [value]; return [value, convertTraditionalToSimplified(value), convertSimplifiedToTraditional(value)]; }
-function matchText(text, tokens, normalisedText = normalise(text)) {
+function matchText(text, tokens, normalisedText = normalise(text), uniqueNativeMatches = false) {
   const ranges = []; let bestLength = 0; let matched = false; let wholeQuery = false;
+  const distinctCharacters = uniqueNativeMatches && tokens.some(token => token.chinese);
   for (const token of tokens) {
     const contiguous = findContiguousRanges(text, token.value, normalisedText, token.normalised);
     const fuzzy = !contiguous.length && token.chinese ? findChineseSubsequenceRanges(text, token.value) : [];
     const current = contiguous.length ? contiguous : fuzzy;
-    if (current.length) { matched = true; bestLength = Math.max(bestLength, token.value.length); ranges.push(...current); }
+    if (current.length) {
+      matched = true;
+      const length = uniqueNativeMatches ? uniqueMatchCoverage(token.value, [[0, token.value.length]], distinctCharacters) : token.value.length;
+      bestLength = Math.max(bestLength, length);
+      ranges.push(...current);
+    }
   }
   const merged = mergeRanges(ranges);
-  return {matched, ranges: merged, bestLength, coverage: merged.reduce((total, range) => total + range[1] - range[0], 0), wholeQuery};
+  const coverage = uniqueNativeMatches
+    ? uniqueMatchCoverage(text, ranges, distinctCharacters)
+    : merged.reduce((total, range) => total + range[1] - range[0], 0);
+  return {matched, ranges: merged, bestLength, coverage, wholeQuery};
+}
+function uniqueMatchCoverage(text, ranges, distinctCharacters) {
+  // Keep every occurrence highlighted, but award ranking credit only once.
+  // Chinese/mixed searches count distinct characters, including digits;
+  // English/numeric searches
+  // count each matched word/number once, preserving its character-length weight.
+  const units = new Set();
+  for (const [start, end] of ranges) {
+    const canonical = canonicalTerm(text.slice(start, end));
+    const matches = canonical.match(distinctCharacters ? /[^\s]/gu : /[\p{L}\p{N}]+|[^\s]/gu) || [];
+    for (const unit of matches) units.add(unit);
+  }
+  return [...units].reduce((total, unit) => total + [...unit].length, 0);
 }
 function score(term, queryCanonical, normalisedQuery) {
   const search = term._search || prepareSearchTerm(term)._search;
