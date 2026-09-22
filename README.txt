@@ -10,27 +10,51 @@ TERM SEARCH — OFFLINE
 Multiple workbooks
 ------------------
 Imported workbooks form a local library. Use **Manage files** to remove an
-unwanted workbook without affecting the others, or move a workbook up/down to
-set its priority. Circled workbook numbers have their own boxes in the library.
+unwanted workbook without affecting the others. Drag the nine-dot handle to
+set its priority, or focus the handle and press Up/Down. The Search on/off
+button immediately to the left of Remove excludes a file from searches without
+removing it. File order and on/off settings are remembered locally.
+Circled workbook numbers have their own boxes in the library.
 When multiple workbooks are loaded, matching numbers appear beside sheet names
 in results. With one workbook, results show only the sheet name.
 Numbers follow the library order.
 
-The default Smart search checks every kept workbook and is the most complete
+The default Smart search checks every enabled workbook and is the most complete
 choice. For very large libraries, choose **Fast — stop at the first file with
 an exact match**. It checks exact matches in priority order and stops at the
 first matching workbook; if there is no exact match, it searches all files for
 close matches. This keeps normal searches responsive without silently hiding
 results by default.
 
+The arrows beside the Sheet heading cycle through All files, then each enabled
+workbook in library order, then back to All files. The label below Sheet shows
+the current filter; hover over it to read the full filename. Both Smart and Fast
+respect this filter before ranking results and applying the 100-row display cap.
+Disabling or removing the selected workbook resets the filter to All files.
+
+Pinyin search
+-------------
+Click 拼音 at the top right of the search card to search only Chinese text in
+the Native column by pronunciation. English text, Translation and aliases do
+not produce pinyin hits. Turn it off to restore normal search with the same query.
+Examples: zichan, zi chan, zīchǎn and zi1chan3 find 资产 (also 資產).
+Loose z/zh, c/ch and s/sh spellings are accepted, so zican also finds 资产.
+Partial spellings match while typing, starting at a syllable boundary. Separate
+alternatives with commas; spaces join syllables. Use ü, v or u: for ü.
+Matching Native characters are highlighted; complete standard spellings rank
+first. Pronunciation uses the bundled pinyin-pro 3.29.4 dictionary and works
+offline. Uncommon names or context-dependent pronunciations may differ.
+Pinyin mode and the Sheet filter reset when the page is reopened.
+
 Privacy
 -------
 The page has no upload, server, or Internet request. The workbook is read only
-in your browser and is never modified. It is not saved by the page.
+in your browser and the original Excel file is never modified. The imported
+library and its settings are saved in this browser's local IndexedDB storage.
 
 Workbook format
 ---------------
-The page uses every sheet except the final three workbook sheets. It finds the
+The page checks every sheet. It finds the
 first header row containing:
   - Native
   - Translation, or Approved Translation
@@ -80,3 +104,11 @@ Developer checks
 ----------------
 With Node.js installed, run: node --test tests/search.test.cjs
 These checks use a simulated DOM; they do not replace a browser interaction test.
+
+Pinyin dependency
+-----------------
+pinyin-pro 3.29.4 (MIT), https://github.com/zh-lx/pinyin-pro
+Bundled browser build: vendor/pinyin-pro.js
+License: vendor/pinyin-pro.LICENSE
+Source package: https://registry.npmjs.org/pinyin-pro/-/pinyin-pro-3.29.4.tgz
+Package SHA-512 (base64): SPXpDT2cHEy+d26V1RXYMlVzXN42hotFAak1fzyWPi4o2dKXb61UqD4pzxDJHwk6gbv8vQ6EfErd+hYX0Qhzug==

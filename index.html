@@ -28,21 +28,22 @@
         <button id="toggleLibrary" type="button" aria-expanded="false">Manage files</button>
       </div>
       <div id="libraryPanel" class="library-panel" hidden>
-        <p class="library-help">Files at the top have higher priority. Remove only the files you no longer need; the remaining files stay in your library.</p>
+        <p class="library-help">Drag the nine-dot handle to set file priority, or focus it and press ↑ / ↓. Toggle Search on/off to keep a file in the library without searching it.</p>
         <div id="workbookList" class="workbook-list"></div>
         <label class="search-mode" for="searchScope">Search behaviour
           <select id="searchScope">
-            <option value="all">Smart — search every file (recommended)</option>
+            <option value="all">Smart — search every enabled file (recommended)</option>
             <option value="first-exact">Fast — stop at the first file with an exact match</option>
           </select>
         </label>
-        <p class="mode-help">Fast mode checks the pre-built exact-match index in priority order. If no exact match exists, it searches all kept files for close matches.</p>
+        <p class="mode-help">Fast mode checks enabled files in priority order. If no exact match exists, it searches them for close matches. Both modes respect the workbook filter beside Sheet.</p>
       </div>
     </section>
 
     <section id="searchArea" class="search-area" hidden>
-      <label for="searchInput">Search native terms or translations</label>
+      <div class="search-heading"><label id="searchLabel" for="searchInput">Search native terms or translations</label><button id="pinyinToggle" class="pinyin-toggle" type="button" aria-pressed="false" aria-describedby="pinyinHint" title="Search Native Chinese by pinyin"><span class="mode-light" aria-hidden="true"></span><span lang="zh-Hans">拼音</span></button></div>
       <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="searchInput" type="search" autocomplete="off" aria-controls="resultsTable" aria-describedby="keyboardHint" placeholder="Example: 权益, 应收融资, or balance sheet"><button id="selectAllToggle" class="select-all-toggle" type="button" aria-label="全选 — select all search text on a single click" aria-pressed="false" title="Off: normal text selection. Click to enable select-all on a single click."><span class="select-all-light" aria-hidden="true"></span><span lang="zh-Hans">全选</span></button></div>
+      <p id="pinyinHint" class="hint" hidden>拼音 on · Native Chinese only · English search is paused. Try zichan or zican → 资产.</p>
       <section id="suggestions" class="suggestions" hidden><strong>Terminology suggestions</strong><p>These are related terms from your Excel—not automatic translations.</p><div id="suggestionList"></div></section>
     </section>
 
@@ -51,7 +52,7 @@
       <div class="table-scroll">
         <table id="resultsTable">
           <colgroup><col class="sheet-col"><col class="native-col"><col class="translation-col"></colgroup>
-          <thead><tr><th class="sheet-header">Sheet <span id="sheetResize" class="column-resize" title="Drag to resize the Sheet column" aria-label="Drag to resize the Sheet column"></span></th><th>Native</th><th>Translation</th></tr></thead>
+          <thead><tr><th class="sheet-header"><div class="sheet-heading">Sheet <span class="sheet-filter-arrows"><button id="previousWorkbook" type="button" aria-label="Previous workbook filter" title="Previous workbook">‹</button><button id="nextWorkbook" type="button" aria-label="Next workbook filter" title="Next workbook">›</button></span></div><span id="workbookFilterLabel" class="workbook-filter-label" aria-live="polite">All files</span><span id="sheetResize" class="column-resize" title="Drag to resize the Sheet column" aria-label="Drag to resize the Sheet column"></span></th><th>Native</th><th>Translation</th></tr></thead>
           <tbody id="resultsBody"></tbody>
         </table>
       </div>
@@ -85,7 +86,11 @@
       <dt>Copy with the keyboard</dt>
       <dd id="keyboardHint">Press ↓ in the search bar to select the first result, or ↑ to select the last. Use ↑/↓ to move between rows and Enter to copy the selected translation. Press Esc, or ↑ on the first row, to return to the search bar.</dd>
       <dt>Manage your workbook library</dt>
-      <dd>Use Manage files to reorder workbooks by priority or remove them from the library. Smart mode searches every workbook. Fast mode stops at the first workbook with an exact match, or searches all workbooks if none has one.</dd>
+      <dd>Drag a nine-dot handle to reorder files (or focus it and press ↑ / ↓). Search on/off includes or excludes a workbook without removing it; this setting and file order are saved locally. Smart searches every enabled workbook. Fast stops at the first enabled workbook with an exact match, or searches all enabled workbooks if none has one.</dd>
+      <dt>Search with 拼音</dt>
+      <dd>Toggle 拼音 above the search box to search only the pinyin of Native Chinese text. English and Translation matching pause until you turn it off. Type zichan, zi chan or zīchǎn for 资产. Loose z/zh, c/ch and s/sh spelling is also accepted, including zican. Full spellings rank first; partial spellings help while typing. Pronunciation uses a bundled offline dictionary.</dd>
+      <dt>Filter by workbook</dt>
+      <dd>Use ‹ / › beside Sheet to cycle through All files and each enabled workbook in library order. The label below shows the selected filename (hover for the full name). Filtering searches that file before limiting the table to 100 results. Disabling or removing the selected file returns to All files.</dd>
       <dt>Work with cells and columns</dt>
       <dd>Right-click a cell for Edit, Undo and Save options. Drag the right edge of the Sheet heading to resize that column.</dd>
       <dt>Use it offline</dt>
@@ -96,6 +101,7 @@
   <div id="cellMenu" class="cell-menu" hidden><button data-action="edit">Edit</button><button data-action="undo">Undo</button><button data-action="save">Save</button></div>
   <script src="vendor/jszip.min.js"></script>
   <script src="vendor/opencc-full.js"></script>
+  <script src="vendor/pinyin-pro.js"></script>
   <script src="script.js"></script>
 </body>
 </html>

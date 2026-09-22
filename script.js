@@ -6,6 +6,8 @@ let terms = [], workbooks = [], exactIndexes = [], searchTimer = null, activeCel
 let previousSearchValue = searchInput.value, resultsScrollTop = 0;
 let displayedResults = [], selectedResultIndex = -1;
 let selectAllOnSearchClick = false;
+let pinyinMode = false, workbookFilterId = null;
+const pinyinReady = Boolean(window.pinyinPro?.pinyin);
 const openCCReady = Boolean(window.OpenCC && OpenCC.Converter);
 const convertTraditionalToSimplified = openCCReady ? OpenCC.Converter({from:'tw', to:'cn'}) : value => value;
 const convertSimplifiedToTraditional = openCCReady ? OpenCC.Converter({from:'cn', to:'tw'}) : value => value;
@@ -46,6 +48,20 @@ searchInput.addEventListener('keydown', event => {
 });
 $('toggleLibrary').addEventListener('click', () => { const panel = $('libraryPanel'), button = $('toggleLibrary'); panel.hidden = !panel.hidden; button.setAttribute('aria-expanded', String(!panel.hidden)); button.textContent = panel.hidden ? 'Manage files' : 'Close manager'; });
 $('searchScope').addEventListener('change', renderResults);
+$('previousWorkbook').addEventListener('click', () => cycleWorkbookFilter(-1));
+$('nextWorkbook').addEventListener('click', () => cycleWorkbookFilter(1));
+$('pinyinToggle').disabled = !pinyinReady;
+if (!pinyinReady) $('pinyinToggle').title = 'Pinyin dictionary is missing. Keep the vendor folder beside this page.';
+$('pinyinToggle').addEventListener('click', () => {
+  if (!pinyinReady) return;
+  pinyinMode = !pinyinMode;
+  $('pinyinToggle').setAttribute('aria-pressed', String(pinyinMode));
+  $('pinyinToggle').title = pinyinMode ? 'Pinyin on: Native Chinese only. Click to restore normal search.' : 'Search Native Chinese by pinyin';
+  $('searchLabel').textContent = pinyinMode ? 'Search Native Chinese by pinyin' : 'Search native terms or translations';
+  $('pinyinHint').hidden = !pinyinMode;
+  searchInput.placeholder = pinyinMode ? 'Example: zichan, zi chan, or zican → 资产' : 'Example: 权益, 应收融资, or balance sheet';
+  renderResults();
+});
 setUpSheetColumnResize();
 
 async function importWorkbooks(files) {
@@ -65,7 +81,7 @@ async function addWorkbook(name, buffer, {persist = true} = {}) {
     const bookTerms = prepareSearchTerms(parsed.terms.map(term => ({...term, workbookId:name, workbookName:name})));
     if (!bookTerms.length) throw new Error('No sheet with both a Native column and a Translation/Approved Translation column was found.');
     const previous = workbooks.find(item => item.id === name);
-    const book = {id:name, name, buffer, terms:bookTerms, usedSheets:parsed.usedSheets, priority:previous ? previous.priority : workbooks.length, saved:Date.now()};
+    const book = {id:name, name, buffer, terms:bookTerms, usedSheets:parsed.usedSheets, enabled:previous?.enabled !== false, priority:previous ? previous.priority : workbooks.length, saved:Date.now()};
     const existing = workbooks.findIndex(item => item.id === book.id);
     if (existing >= 0) workbooks.splice(existing, 1, book); else workbooks.push(book);
     rebuildSearchData();
@@ -133,7 +149,7 @@ function scheduleRenderResults() {
 function prepareSearchTerms(items) { return items.map(prepareSearchTerm); }
 function rebuildSearchData() {
   workbooks.forEach((book, index) => { book.priority = index; });
-  terms = workbooks.flatMap(book => book.terms);
+  terms = workbooks.filter(book => book.enabled !== false).flatMap(book => book.terms);
   terms.forEach((term, index) => { term.order = index; });
   exactIndexes = workbooks.map(book => {
     const index = new Map();
@@ -170,6 +186,78 @@ function isCandidate(term, tokenData) {
   const search = term._search || prepareSearchTerm(term)._search;
   return tokenData.some(token => search.canonical.some(text => text.includes(token.canonical)) || (token.chinese && search.raw.some(text => hasChineseSubsequence(text, token.value))));
 }
+function updateWorkbookFilter() {
+  const enabled = workbooks.filter(book => book.enabled !== false);
+  if (!enabled.some(book => book.id === workbookFilterId)) workbookFilterId = null;
+  const selected = enabled.find(book => book.id === workbookFilterId);
+  const label = $('workbookFilterLabel');
+  label.textContent = selected ? selected.name : 'All files';
+  label.title = selected ? `Showing ${selected.name}` : 'Search all enabled workbooks';
+  for (const id of ['previousWorkbook', 'nextWorkbook']) $(id).disabled = !enabled.length;
+  return enabled;
+}
+function cycleWorkbookFilter(direction) {
+  const choices = [null, ...updateWorkbookFilter().map(book => book.id)];
+  workbookFilterId = choices[(choices.indexOf(workbookFilterId) + direction + choices.length) % choices.length];
+  resultsScrollTop = resultsScroller.scrollTop = 0;
+  renderResults();
+}
+function normalisePinyin(value) {
+  return value.toLowerCase().replace(/u:/g, 'v').normalize('NFD')
+    .replace(/u\u0308/g, 'v').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\s'’1-5]/g, '');
+}
+function loosePinyin(value) { return value.replace(/([zcs])h/g, '$1'); }
+function pinyinSegments(term) {
+  const search = term._search || prepareSearchTerm(term)._search;
+  if (search.pinyin) return search.pinyin;
+  // Index only consecutive Chinese characters in Native. English, aliases and
+  // translations cannot become pinyin hits. Keep UTF-16 offsets for highlighting.
+  search.pinyin = [...term.native.matchAll(/\p{Script=Han}+/gu)].map(match => {
+    const characters = [...match[0]];
+    const simplified = characters.map(char => convertTraditionalToSimplified(char)).join('');
+    const syllables = pinyinPro.pinyin(simplified, {toneType:'none', type:'array'}).map(normalisePinyin);
+    let offset = match.index;
+    const ranges = characters.map(char => { const start = offset; offset += char.length; return [start, offset]; });
+    return {syllables, ranges};
+  });
+  return search.pinyin;
+}
+function matchPinyin(term, queries) {
+  const ranges = []; let exact = false, standardExact = false;
+  for (const segment of pinyinSegments(term)) {
+    for (const query of queries) {
+      for (const loose of [false, true]) {
+        const syllables = loose ? segment.syllables.map(loosePinyin) : segment.syllables;
+        const needle = loose ? loosePinyin(query) : query;
+        const joined = syllables.join('');
+        let startOffset = 0;
+        for (let start = 0; start < syllables.length; start++) {
+          if (joined.startsWith(needle, startOffset)) {
+            let end = start, consumed = syllables[start].length;
+            while (consumed < needle.length && end + 1 < syllables.length) consumed += syllables[++end].length;
+            ranges.push([segment.ranges[start][0], segment.ranges[end][1]]);
+            if (start === 0 && needle === joined && segment.ranges[0][0] === 0 && segment.ranges.at(-1)[1] === term.native.length) {
+              exact = true;
+              if (!loose) standardExact = true;
+            }
+          }
+          startOffset += syllables[start].length;
+        }
+      }
+    }
+  }
+  const merged = mergeRanges(ranges), coverage = merged.reduce((n, [start, end]) => n + [...term.native.slice(start, end)].length, 0);
+  return {matched:merged.length > 0, ranges:merged, coverage, bestLength:coverage, exact, standardExact};
+}
+function pinyinCandidates(source, query) {
+  const queries = query.split(/[,，;；\n]+/).map(normalisePinyin).filter(value => /^[a-zv]+$/.test(value));
+  if (!queries.length) return [];
+  const matches = source.map(term => ({...term, pinyinMatch:matchPinyin(term, queries)})).filter(term => term.pinyinMatch.matched);
+  if ($('searchScope').value !== 'first-exact') return matches;
+  const first = workbooks.find(book => book.enabled !== false && matches.some(term => term.workbookId === book.id && term.pinyinMatch.exact));
+  return first ? matches.filter(term => term.workbookId === first.id && term.pinyinMatch.exact) : matches;
+}
 function renderResults() {
   // Keep the offset through DOM replacement, including an empty search followed by undo.
   if (resultsScroller.scrollHeight > resultsScroller.clientHeight) resultsScrollTop = resultsScroller.scrollTop;
@@ -177,30 +265,33 @@ function renderResults() {
   const hadResultFocus = body.contains(document.activeElement);
   clearResultSelection();
   body.textContent = '';
-  const tokens = makeSearchTokens(query);
+  updateWorkbookFilter();
+  const tokens = pinyinMode ? [] : makeSearchTokens(query);
   const tokenData = makeSearchTokenData(tokens), queryCanonical = canonicalTerm(query), normalisedQuery = normalise(query);
   const displayed = [], maximumResults = 100;
   let candidates = [];
   if (query) {
-    const firstExactIndex = $('searchScope').value === 'first-exact' ? exactIndexes.find(index => index.has(queryCanonical)) : null;
+    const scopedTerms = workbookFilterId === null ? terms : terms.filter(term => term.workbookId === workbookFilterId);
+    const firstExactIndex = !pinyinMode && $('searchScope').value === 'first-exact' ? exactIndexes.find((index, position) => workbooks[position].enabled !== false && (workbookFilterId === null || workbooks[position].id === workbookFilterId) && index.has(queryCanonical)) : null;
     // Fast mode never walks later workbooks after an exact hit. All other searches use the full local index.
-    candidates = firstExactIndex ? firstExactIndex.get(queryCanonical) : terms.filter(term => isCandidate(term, tokenData));
+    candidates = pinyinMode ? pinyinCandidates(scopedTerms, query) : firstExactIndex ? firstExactIndex.get(queryCanonical) : scopedTerms.filter(term => isCandidate(term, tokenData));
   }
   const matchingCount = candidates.length;
   for (const t of candidates) {
     const search = t._search || prepareSearchTerm(t)._search;
-    const nativeMatch = matchText(t.native, tokenData, search.normalised[0], true), translationMatch = matchText(t.translation, tokenData, search.normalised[1]), aliasMatch = matchText((t.aliases || []).join(' '), tokenData, search.normalised[2], true);
+    const nativeMatch = pinyinMode ? t.pinyinMatch : matchText(t.native, tokenData, search.normalised[0], true), translationMatch = matchText(t.translation, tokenData, search.normalised[1]), aliasMatch = matchText((t.aliases || []).join(' '), tokenData, search.normalised[2], true);
     const candidate = {...t, nativeMatch, translationMatch, aliasMatch, bestLength: Math.max(nativeMatch.bestLength, translationMatch.bestLength, aliasMatch.bestLength)};
-    candidate.rankScore = score(candidate, queryCanonical, normalisedQuery);
+    candidate.rankScore = pinyinMode ? (nativeMatch.standardExact ? 1000000 : nativeMatch.exact ? 900000 : nativeMatch.coverage * 10000 - [...t.native].length * 100) : score(candidate, queryCanonical, normalisedQuery);
     if (displayed.length < maximumResults) displayed.push(candidate);
     else { let weakest = 0; for (let i = 1; i < displayed.length; i++) if (compareResults(displayed[i], displayed[weakest]) > 0) weakest = i; if (compareResults(candidate, displayed[weakest]) < 0) displayed[weakest] = candidate; }
   }
   displayed.sort(compareResults);
   displayedResults = displayed;
-  $('resultCount').textContent = query ? `${matchingCount.toLocaleString()} matching term${matchingCount === 1 ? '' : 's'}` : 'Type or paste Chinese or English to start searching';
-  $('emptyState').hidden = !query || matchingCount > 0; $('fallback').hidden = !query || matchingCount > 0;
+  $('resultCount').textContent = query ? `${matchingCount.toLocaleString()} matching term${matchingCount === 1 ? '' : 's'}` : pinyinMode ? 'Type pinyin to search Native Chinese' : 'Type or paste Chinese or English to start searching';
+  $('emptyState').textContent = workbooks.length && !workbooks.some(book => book.enabled !== false) ? 'All files are disabled. Turn Search on for a workbook in Manage files.' : 'No matching terms found.';
+  $('emptyState').hidden = !query || matchingCount > 0; $('fallback').hidden = pinyinMode || !query || matchingCount > 0;
   for (const [index, term] of displayed.entries()) {
-    const exactNative = isExactNativeMatch(term.native, query);
+    const exactNative = pinyinMode ? term.pinyinMatch.exact : isExactNativeMatch(term.native, query);
     const tr = document.createElement('tr');
     tr.tabIndex = -1;
     tr.setAttribute('aria-describedby', 'keyboardHint');
@@ -226,6 +317,7 @@ function clearResultSelection() {
   $('selectedMatchInfo').textContent = '';
 }
 function selectedMatchLabel(term) {
+  if (pinyinMode) return term.pinyinMatch.exact ? 'Selected: Exact Native pinyin match' : `Selected Native: ${term.nativeMatch.coverage} pinyin-matched character${term.nativeMatch.coverage === 1 ? '' : 's'}`;
   const queryCanonical = canonicalTerm(searchInput.value.trim());
   if (term._search.canonical[0] === queryCanonical) return 'Selected: Exact Native match';
   if (term._search.canonical[1] === queryCanonical) return 'Selected: Exact Translation match';
@@ -343,7 +435,7 @@ function copyCell(term, field, ranges, exactNative = false) {
   div.append(label);
   if (exactNative) { const tick = document.createElement('img'); tick.className = 'exact-tick'; tick.src = 'assets/exact-match-tick.png'; tick.alt = 'Exact match'; tick.title = 'Exact match'; div.append(' ', tick); }
   setUpDragCopy(div, label, text);
-  div.addEventListener('contextmenu', event => { event.preventDefault(); activeCell = {term, field, div}; showCellMenu(event.clientX, event.clientY); });
+  div.addEventListener('contextmenu', event => { event.preventDefault(); const original = terms.find(item => item.workbookId === term.workbookId && item.order === term.order) || term; activeCell = {term:original, field, div}; showCellMenu(event.clientX, event.clientY); });
   td.append(div); return td;
 }
 const punctuationEquivalents = {'：':':','；':';','‘':"'",'’':"'",'“':'"','”':'"','，':',','。':'.','（':'(','）':')','－':'-','—':'-','–':'-','、':','};
@@ -440,7 +532,7 @@ function showToast(message) { const toast = $('toast'); toast.textContent = mess
 function setUpSheetColumnResize() {
   const handle = $('sheetResize'), table = $('resultsTable'); let startX = 0, startWidth = 0;
   handle.addEventListener('pointerdown', event => { startX = event.clientX; startWidth = table.querySelector('.sheet-col').getBoundingClientRect().width; handle.setPointerCapture(event.pointerId); handle.classList.add('dragging'); });
-  handle.addEventListener('pointermove', event => { if (!handle.hasPointerCapture(event.pointerId)) return; table.style.setProperty('--sheet-width', `${Math.max(65, Math.min(310, startWidth + event.clientX - startX))}px`); });
+  handle.addEventListener('pointermove', event => { if (!handle.hasPointerCapture(event.pointerId)) return; table.style.setProperty('--sheet-width', `${Math.max(120, Math.min(310, startWidth + event.clientX - startX))}px`); });
   const stop = event => { if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId); handle.classList.remove('dragging'); };
   handle.addEventListener('pointerup', stop); handle.addEventListener('pointercancel', stop);
 }
@@ -476,9 +568,12 @@ async function restoreLibrary() {
 function renderWorkbookLibrary() {
   const holder = $('workbookList'); holder.textContent = '';
   $('libraryControls').hidden = !workbooks.length;
-  $('librarySummary').textContent = `${workbooks.length} file${workbooks.length === 1 ? '' : 's'} · ${terms.length.toLocaleString()} terms`;
+  $('librarySummary').textContent = `${workbooks.length} file${workbooks.length === 1 ? '' : 's'} · ${workbooks.filter(book => book.enabled !== false).length} enabled · ${terms.length.toLocaleString()} searchable terms`;
+  updateWorkbookFilter();
   workbooks.forEach((book, index) => {
     const row = document.createElement('div'); row.className = 'workbook-row';
+    row.dataset.workbookId = book.id;
+    if (book.enabled === false) row.classList.add('workbook-disabled');
     const detail = document.createElement('div'); detail.className = 'workbook-detail';
     const numberBox = document.createElement('div'); numberBox.className = 'workbook-number-box';
     numberBox.append(workbookBadge(index + 1));
@@ -486,16 +581,71 @@ function renderWorkbookLibrary() {
     const meta = document.createElement('span'); meta.textContent = `${book.terms.length.toLocaleString()} terms · ${book.usedSheets || new Set(book.terms.map(term => term.sheet)).size} sheet${(book.usedSheets || new Set(book.terms.map(term => term.sheet)).size) === 1 ? '' : 's'}`;
     detail.append(name, meta);
     const actions = document.createElement('div'); actions.className = 'workbook-actions';
-    actions.append(workbookButton('↑', 'Move up', () => moveWorkbook(index, -1), index === 0), workbookButton('↓', 'Move down', () => moveWorkbook(index, 1), index === workbooks.length - 1), workbookButton('Remove', `Remove ${book.name}`, () => removeWorkbook(book.id), false, 'remove'));
-    row.append(numberBox, detail, actions); holder.append(row);
+    const toggle = workbookButton(book.enabled === false ? 'Search off' : 'Search on', `Include ${book.name} in search`, () => toggleWorkbook(book.id), false, 'workbook-toggle');
+    toggle.setAttribute('aria-pressed', String(book.enabled !== false));
+    actions.append(toggle, workbookButton('Remove', `Remove ${book.name}`, () => removeWorkbook(book.id), false, 'remove'));
+    const handle = workbookButton('', `Reorder ${book.name}: drag or use Up and Down arrow keys`, () => {}, workbooks.length < 2, 'workbook-drag-handle');
+    for (let dot = 0; dot < 9; dot++) { const span = document.createElement('span'); span.setAttribute('aria-hidden', 'true'); handle.append(span); }
+    setUpWorkbookDrag(handle, row, book.id);
+    handle.addEventListener('keydown', async event => {
+      if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+      event.preventDefault();
+      const current = workbooks.findIndex(item => item.id === book.id);
+      await moveWorkbook(current, event.key === 'ArrowUp' ? -1 : 1);
+      [...holder.children].find(item => item.dataset.workbookId === book.id)?.querySelector('.workbook-drag-handle')?.focus();
+    });
+    row.append(handle, numberBox, detail, actions); holder.append(row);
   });
 }
 function workbookButton(label, title, action, disabled, className = '') { const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.title = title; button.setAttribute('aria-label', title); button.disabled = disabled; button.className = className; button.addEventListener('click', action); return button; }
+async function persistLibraryOrder() {
+  try { await Promise.all(workbooks.map(saveBook)); }
+  catch (error) { console.warn('Could not save library order', error); showToast('Order changed for this session; local saving is unavailable.'); }
+}
+async function toggleWorkbook(id) {
+  const book = workbooks.find(item => item.id === id); if (!book) return;
+  book.enabled = book.enabled === false;
+  rebuildSearchData(); renderWorkbookLibrary(); renderResults();
+  try { await saveBook(book); }
+  catch (error) { console.warn('Could not save workbook setting', error); showToast('Setting changed for this session; local saving is unavailable.'); }
+}
+function setUpWorkbookDrag(handle, row, id) {
+  let dragging = false, startY = 0, destination = null;
+  const clearMarkers = () => { for (const item of $('workbookList').children) { item.classList.remove('drop-before'); item.classList.remove('drop-after'); } };
+  handle.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || handle.disabled) return;
+    startY = event.clientY; destination = null; dragging = false;
+    handle.setPointerCapture(event.pointerId);
+  });
+  handle.addEventListener('pointermove', event => {
+    if (!handle.hasPointerCapture(event.pointerId)) return;
+    if (!dragging && Math.abs(event.clientY - startY) < 4) return;
+    dragging = true; row.classList.add('workbook-dragging'); clearMarkers();
+    const others = [...$('workbookList').children].filter(item => item !== row);
+    const next = others.find(item => { const rect = item.getBoundingClientRect(); return event.clientY < rect.top + rect.height / 2; });
+    destination = next ? next.dataset.workbookId : null;
+    if (next) next.classList.add('drop-before'); else others.at(-1)?.classList.add('drop-after');
+  });
+  const stop = async event => {
+    if (!handle.hasPointerCapture(event.pointerId)) return;
+    handle.releasePointerCapture(event.pointerId); clearMarkers(); row.classList.remove('workbook-dragging');
+    if (!dragging || event.type !== 'pointerup') { dragging = false; return; }
+    dragging = false;
+    const index = workbooks.findIndex(book => book.id === id);
+    if (index < 0) return;
+    const [book] = workbooks.splice(index, 1);
+    const target = destination === null ? workbooks.length : workbooks.findIndex(item => item.id === destination);
+    workbooks.splice(target < 0 ? workbooks.length : target, 0, book);
+    rebuildSearchData(); renderWorkbookLibrary(); renderResults();
+    await persistLibraryOrder();
+  };
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) handle.addEventListener(type, stop);
+}
 async function moveWorkbook(index, direction) {
-  const target = index + direction; if (target < 0 || target >= workbooks.length) return;
+  const target = index + direction; if (index < 0 || target < 0 || target >= workbooks.length) return;
   [workbooks[index], workbooks[target]] = [workbooks[target], workbooks[index]];
   rebuildSearchData(); renderWorkbookLibrary(); renderResults();
-  await Promise.all(workbooks.map(saveBook));
+  await persistLibraryOrder();
 }
 async function removeWorkbook(id) {
   const book = workbooks.find(item => item.id === id); if (!book) return;
